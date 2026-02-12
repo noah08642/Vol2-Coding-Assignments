@@ -1,0 +1,29 @@
+birthday example
+
+firebase
+firestore export (sink / sync)
+firestore import
+
+
+daily:
+    firestore export goes into our transactional table
+
+occasionally:
+    we think we lost some data, so we run a firestore import
+    recuperation process:
+        import = the firestore import
+        curr_state = current_state(firestore_export) # the state of the rtdb from the perspective of our transactional database at the time the import was pulled (in the form of a table)
+        case 1: if import == curr_state (on a given row)
+            pass
+        case 2: if import != curr_state (on a given row)
+            new_transaction = difference(import, curr_state) # with transaction_timestamp = import_timestamp
+            lost_transactions_table.add(new_transaction)
+
+    analytics process:
+        combined_table = lost_transactions_table UNION ALL firestore_export 
+        derivative_tables = operations(combined_table)
+
+
+
+Dallas brought up a problem of the integration of firebase backup data in Case 2.
+I have been thinking about it and have some solutions but none that I love, and I 
