@@ -1,29 +1,80 @@
-birthday example
+with active as (
+  select
+    day,
+    suid,
+    dsn
+  from `odata-dev.monitoring.daily_sock`
+  where monitoring_hours >= 0.25
+),
 
-firebase
-firestore export (sink / sync)
-firestore import
+candidates as (
+  select
+    min(day) as first_active_day,
+    suid,
+    dsn
+  from active
+  group by suid, dsn
+  having first_active_day >= date("2024-01-01")
+),
 
+filtered as (
+  select
+    c.first_active_day,
+    c.suid,
+    c.dsn,
+    a.day as active_day
+  from candidates c
+  left join active a
+    using (suid, dsn)
+),
 
-daily:
-    firestore export goes into our transactional table
+cohorts as (
+  -- assign each subscription to a cohort by the year-month of first activity
+  select
+    format_date('%y-%m', first_active_day) as cohort_month,
+    suid,
+    dsn,
+    first_active_day,
+    active_day,
+    -- how many full months after first_active_day is this activity?
+    date_diff(
+      date_trunc(active_day, month),
+      date_trunc(first_active_day, month),
+      month
+    ) as month_number
+  from filtered
+),
 
-occasionally:
-    we think we lost some data, so we run a firestore import
-    recuperation process:
-        import = the firestore import
-        curr_state = current_state(firestore_export) # the state of the rtdb from the perspective of our transactional database at the time the import was pulled (in the form of a table)
-        case 1: if import == curr_state (on a given row)
-            pass
-        case 2: if import != curr_state (on a given row)
-            new_transaction = difference(import, curr_state) # with transaction_timestamp = import_timestamp
-            lost_transactions_table.add(new_transaction)
+cohort_sizes as (
+  -- count distinct subscriptions per cohort (the denominator)
+  select
+    cohort_month,
+    count(distinct concat(suid, '-', dsn)) as cohort_size
+  from cohorts
+  where month_number = 0
+  group by cohort_month
+),
 
-    analytics process:
-        combined_table = lost_transactions_table UNION ALL firestore_export 
-        derivative_tables = operations(combined_table)
+retention_counts as (
+  -- count active subscriptions per cohort per month offset
+  select
+    cohort_month,
+    month_number,
+    count(distinct concat(suid, '-', dsn)) as active_count
+  from cohorts
+  where month_number >= 0
+  group by cohort_month, month_number
+)
 
-
-
-Dallas brought up a problem of the integration of firebase backup data in Case 2.
-I have been thinking about it and have some solutions but none that I love, and I 
+select
+  r.cohort_month,
+  cs.cohort_size as subscriptions,
+  r.month_number,
+  r.active_count,
+  round(r.active_count / cs.cohort_size * 100, 1) as retention_rate
+from retention_counts r
+join cohort_sizes cs
+  using (cohort_month)
+order by
+  r.cohort_month,
+  r.month_number
